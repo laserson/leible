@@ -43,6 +43,16 @@ def extract_article_from_pubmed_xml(soup: BeautifulSoup) -> Article:
         year = None
 
     try:
+        authors = []
+        for author_soup in soup.find_all("Author"):
+            last_name = author_soup.find("LastName").text.strip()
+            first_name = author_soup.find("ForeName").text.strip()
+            authors.append(f"{first_name} {last_name}")
+        authors = ", ".join(authors)
+    except AttributeError:
+        authors = None
+
+    try:
         doi = (
             soup.find("ArticleIdList")
             .find("ArticleId", attrs={"IdType": "doi"})
@@ -61,7 +71,13 @@ def extract_article_from_pubmed_xml(soup: BeautifulSoup) -> Article:
         pmid = None
 
     return Article(
-        title=title, abstract=abstract, journal=journal, year=year, doi=doi, pmid=pmid
+        title=title,
+        abstract=abstract,
+        journal=journal,
+        year=year,
+        authors=authors,
+        doi=doi,
+        pmid=pmid,
     )
 
 
@@ -102,7 +118,6 @@ def get_articles_by_pmids(pmids: list[str]) -> list[Article]:
     return articles
 
 
-
 @sleep_and_retry
 @limits(calls=1, period=1)
 def get_article_from_biorxiv(url: str) -> Article:
@@ -129,5 +144,19 @@ def get_article_from_biorxiv(url: str) -> Article:
         .get("content")
         .split("-")[0]
     )
+    authors_soup = soup.find("div", class_="highwire-cite-authors")
+    authors = []
+    for author_soup in authors_soup.find_all("span", class_="highwire-citation-author"):
+        given_name = author_soup.find("span", class_="nlm-given-names").get_text()
+        last_name = author_soup.find("span", class_="nlm-surname").get_text()
+        authors.append(f"{given_name} {last_name}")
+    authors = ", ".join(authors)
     doi = soup.find("meta", attrs={"name": "citation_doi"}).get("content")
-    return Article(title=title, abstract=abstract, journal=journal, year=year, doi=doi)
+    return Article(
+        title=title,
+        abstract=abstract,
+        journal=journal,
+        year=year,
+        authors=authors,
+        doi=doi,
+    )

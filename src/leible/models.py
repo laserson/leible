@@ -7,6 +7,7 @@ class Article:
     abstract: str
     journal: str = None
     year: int = None
+    authors: str = None  # string containing author info
     source: str = None  # e.g., BioRxiv email, Papers app
     date_added: str = None  # YYYY-MM-DD
     notes: str = None  # extra info, preferably in JSON
