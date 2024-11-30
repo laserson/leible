@@ -23,7 +23,9 @@ def fetch_emails(
         client.select_folder(folder, readonly=True)
         message_ids = client.search()
         emails = []
-        for message_uid, message_data in client.fetch(message_ids, [b"RFC822", b"FLAGS"]).items():
+        for message_uid, message_data in client.fetch(
+            message_ids, [b"RFC822", b"FLAGS"]
+        ).items():
             message = email.message_from_bytes(
                 message_data[b"RFC822"], policy=email.policy.default
             )
@@ -63,7 +65,7 @@ def parse_email_biorxiv(message: email.message.EmailMessage) -> list[Article]:
     for url in urls:
         try:
             article = get_article_from_biorxiv(url)
-        except Exception as e:
+        except Exception:
             logger.error("Failed to load article: {}", url)
             continue
         article.source = f"BioRxiv {subject}"
@@ -139,8 +141,8 @@ def parse_email(message: email.message.EmailMessage) -> list[Article]:
         case "announce@annualreviews.org":
             return parse_email_annual_reviews(message)
 
-    logger.warning("Unhandled email from: {}", from_)
-    return []
+    logger.warning("No email handler for sender: {}", from_)
+    raise NotImplementedError(f"Unknown sender: {from_}")
 
 
 def generate_report(
@@ -184,7 +186,8 @@ def generate_report(
     ):
         report_html += f"""
         <div style='margin: 1em 0;'>
-            <strong>{article["title"]}</strong><br>
+            <strong><a href='https://doi.org/{article["doi"]}'>{article["title"]}</a></strong><br>
+            {article["authors"]}<br>
             <em>{article["journal"]}</em><br>
             <a href='https://doi.org/{article["doi"]}'>https://doi.org/{article["doi"]}</a><br>
             <span style='color: #666;'>Distance: {article["distance"]:.3f}</span>

@@ -89,15 +89,19 @@ def emails(library_csv: Path, threshold: float, log_level: str):
 
     # process emails
     for message in emails:
-        logger.info("Processing email {}", message.get("Subject"))
+        logger.info("Starting to process email {}", message.get("Subject"))
 
         try:
             articles = parse_email(message)
         except NotImplementedError:
-            logger.info("Email {} not supported", message.get("Subject"))
+            logger.info("Email from {} not implemented", message.get("From"))
             continue
         if len(articles) == 0:
-            logger.warning("Email {} returned no articles", message.get("Subject"))
+            logger.warning(
+                "Email {} from {} returned no articles",
+                message.get("Subject"),
+                message.get("From"),
+            )
             logger.debug("Email content:\n{}", str(message))
             continue
         embeddings = embed_articles_specter2(articles)
@@ -111,16 +115,18 @@ def emails(library_csv: Path, threshold: float, log_level: str):
         logger.info(f"Found {num_matches} matches out of {len(articles)} articles")
 
         report_html = generate_report(cross_validation_stats, articles_df, threshold)
+        logger.info("Generated HTML report")
         response = construct_report_email(
             message, report_html, os.environ["LEIBLE_SMTP_USER"]
         )
-
+        logger.info("Constructed report email")
         # send the email
         with smtplib.SMTP_SSL(
             os.environ["LEIBLE_SMTP_HOST"], os.environ["LEIBLE_SMTP_PORT"]
         ) as server:
             server.login(os.environ["LEIBLE_SMTP_USER"], os.environ["LEIBLE_SMTP_PASS"])
             server.send_message(response)
+        logger.info("Sent report email")
 
         # Mark the email as processed by moving it to the processed folder
         with IMAPClient(
@@ -134,3 +140,7 @@ def emails(library_csv: Path, threshold: float, log_level: str):
                 int(message.get("X-IMAP-UID")),
                 os.environ["LEIBLE_IMAP_FOLDER_PROCESSED"],
             )
+        logger.info(
+            "Moved original email to {}", os.environ["LEIBLE_IMAP_FOLDER_PROCESSED"]
+        )
+        logger.info("Finished processing email {}", message.get("Subject"))
