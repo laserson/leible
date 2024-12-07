@@ -3,6 +3,8 @@ import email
 import email.policy
 import io
 import re
+from base64 import urlsafe_b64decode
+from urllib.parse import parse_qs, urlparse
 
 import matplotlib.pyplot as plt
 import polars as pl
@@ -11,7 +13,11 @@ from bs4 import BeautifulSoup
 from imapclient import IMAPClient
 from loguru import logger
 
-from leible.metadata import get_article_from_biorxiv, get_articles_by_pmids
+from leible.metadata import (
+    get_article_from_biorxiv,
+    get_articles_from_crossref,
+    get_articles_from_ncbi_entrez,
+)
 from leible.models import Article
 
 
@@ -81,14 +87,39 @@ def parse_email_pubmed(message: email.message.EmailMessage) -> list[Article]:
     soup = extract_html_from_email(message)
     anchors = soup.find_all("a", class_="docsum-title")
     pmids = [re.fullmatch(r"article_id=(\d+)", a.get("ref")).group(1) for a in anchors]
-    articles = get_articles_by_pmids(pmids)
+    articles = get_articles_from_ncbi_entrez(pmids)
     for article in articles:
         article.source = "NCBI PubMed alert"
     return articles
 
 
-def parse_email_nature(message: email.message.EmailMessage) -> list[str]:
-    raise NotImplementedError("Nature is not implemented")
+def parse_email_nature(message: email.message.EmailMessage) -> list[Article]:
+    npg_magic_param = "_L54AD1F204_"
+    npg_doi_prefix = "10.1038"
+    soup = extract_html_from_email(message)
+    dois = []
+    for elt in soup.find_all("a"):
+        href = elt.get("href")
+        if href is None:
+            continue
+        params = parse_qs(urlparse(href).query)
+        encoded_data = params.get(npg_magic_param)
+        if encoded_data is None:
+            continue
+        # add padding
+        encoded_data = encoded_data[0] + "=" * (4 - len(encoded_data[0]) % 4)
+        decoded_data = urlsafe_b64decode(encoded_data).decode("utf-8")
+        decoded_params = parse_qs(decoded_data)
+        target_url = decoded_params.get("target")
+        if target_url is None:
+            continue
+        target_url = urlparse(target_url[0])
+        if not target_url.path.startswith("/articles"):
+            continue
+        article_id = re.fullmatch(r"/articles/(.+)", target_url.path).group(1)
+        doi = f"{npg_doi_prefix}/{article_id}"
+        dois.append(doi)
+    return get_articles_from_crossref(dois)
 
 
 def parse_email_science(message: email.message.EmailMessage) -> list[str]:

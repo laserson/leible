@@ -2,6 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 from loguru import logger
 from ratelimit import limits, sleep_and_retry
+from urllib.parse import quote as urlquote
 
 from leible.models import Article
 
@@ -83,7 +84,7 @@ def extract_article_from_pubmed_xml(soup: BeautifulSoup) -> Article:
 
 @sleep_and_retry
 @limits(calls=1, period=1)
-def get_articles_by_pmids(pmids: list[str]) -> list[Article]:
+def get_articles_from_ncbi_entrez(pmids: list[str]) -> list[Article]:
     """Get articles by PMIDs from NCBI Entrez.
 
     Parameters
@@ -160,3 +161,97 @@ def get_article_from_biorxiv(url: str) -> Article:
         authors=authors,
         doi=doi,
     )
+
+
+def extract_article_from_crossref_work_item(item):
+    try:
+        title = item["title"][0]
+    except KeyError:
+        raise ValueError("No title found for this article")
+
+    try:
+        abstract = item["abstract"]
+    except KeyError:
+        raise ValueError("No abstract found for this article")
+
+    journal = item.get("container-title")
+
+    if "published-print" in item:
+        year = item["published-print"]["date-parts"][0]
+    elif "published-online" in item:
+        year = item["published-online"]["date-parts"][0]
+    else:
+        year = None
+
+    authors = []
+    for author in item.get("author", []):
+        first_name = author.get("given", "")
+        last_name = author.get("family", "")
+        authors.append(f"{first_name} {last_name}")
+    authors = ", ".join(authors)
+
+    doi = item["DOI"]
+
+    return Article(
+        title=title,
+        abstract=abstract,
+        journal=journal,
+        year=year,
+        authors=authors,
+        doi=doi,
+    )
+
+
+@sleep_and_retry
+@limits(calls=1, period=1)
+def get_articles_from_crossref(dois: list[str], email: str = None) -> list[Article]:
+    """Get articles from Crossref."""
+    logger.debug("Requesting {} articles in total from Crossref", len(dois))
+
+    base_url = "https://api.crossref.org/works"
+    headers = {}
+    if email:
+        headers["User-Agent"] = f"Leible/0.1 (mailto:{email})"
+    doi_filter = ",".join(f"doi:{urlquote(doi)}" for doi in dois)
+    all_items = []
+
+    # first request
+    next_cursor = urlquote("*")
+    url = f"{base_url}?filter={doi_filter}&cursor={next_cursor}"
+    if len(url) > 1700:
+        # this number was chosen as 2000 - len(cursor)
+        raise ValueError(f"Too many dois for one url-encoded request ({len(url)} chars): {url}")
+    logger.debug("Fetching from Crossref: {}", url)
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    data = response.json()
+    items = data.get("message", {}).get("items", [])
+    logger.debug("Fetched {} items from Crossref", len(items))
+    all_items.extend(items)
+
+    # if there's more, keep fetching
+    while len(items) > 0:
+        next_cursor = urlquote(data["message"]["next-cursor"])
+        url = f"{base_url}?filter={doi_filter}&cursor={next_cursor}"
+        logger.debug("Fetching more from Crossref: {}", url)
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        items = data.get("message", {}).get("items", [])
+        logger.debug("Fetched additional {} items from Crossref", len(items))
+        all_items.extend(items)
+
+    logger.debug("Fetched {} items in total from Crossref", len(all_items))
+    missing_dois = list(set(dois) - set([item["DOI"] for item in all_items]))
+    logger.info(f"Failed to get {len(missing_dois)} of {len(dois)} DOIs from CrossRef: {missing_dois}")
+
+    articles = []
+    for item in all_items:
+        try:
+            article = extract_article_from_crossref_work_item(item)
+        except ValueError as e:
+            logger.debug("{}: {}: {}", e, item["DOI"], item)
+            continue
+        logger.debug("Successfully extracted article: {}", article.doi)
+        articles.append(article)
+    return articles
