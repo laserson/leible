@@ -17,7 +17,7 @@ from leible.email import (
     construct_report_email,
     fetch_emails,
     generate_report,
-    parse_email,
+    process_email,
 )
 from leible.embeddings import embed_articles_specter2
 from leible.utils import load_readcube_papers_csv
@@ -63,7 +63,7 @@ def emails(library_csv: Path, threshold: float, log_level: str):
     logger.info(f"Fetched {len(emails)} emails for processing")
 
     # load library and embed articles
-    articles = load_readcube_papers_csv(library_csv)
+    articles = load_readcube_papers_csv(library_csv, os.environ["LEIBLE_IMAP_USER"])
     logger.info(f"Loaded {len(articles)} articles from {library_csv}")
     embeddings = embed_articles_specter2(articles)
     embeddings = np.asarray([e.embedding for e in embeddings])
@@ -92,7 +92,7 @@ def emails(library_csv: Path, threshold: float, log_level: str):
         logger.info("Starting to process email {}", message.get("Subject"))
 
         try:
-            articles = parse_email(message)
+            articles = process_email(message)
         except NotImplementedError:
             logger.info("Email from {} not implemented", message.get("From"))
             continue

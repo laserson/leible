@@ -14,9 +14,11 @@ from imapclient import IMAPClient
 from loguru import logger
 
 from leible.metadata import (
-    get_article_from_biorxiv,
-    get_articles_from_crossref,
-    get_articles_from_ncbi_entrez,
+    request_article_from_biorxiv_url,
+    request_articles_by_dois,
+    request_articles_from_arxiv,
+    request_articles_from_ncbi_entrez,
+    request_articles_from_semantic_scholar,
 )
 from leible.models import Article
 
@@ -48,7 +50,9 @@ def extract_html_from_email(message: email.message.EmailMessage) -> BeautifulSou
     )
 
 
-def extract_urls_from_biorxiv_html(soup: BeautifulSoup) -> list[str]:
+def extract_urls_from_biorxiv_email(message: email.message.EmailMessage) -> list[str]:
+    """Returns list of BioRxiv URLs"""
+    soup = extract_html_from_email(message)
     prefixes = [
         "http://www.biorxiv.org/cgi/content/abstract",
         "http://www.biorxiv.org/content/early",
@@ -63,37 +67,32 @@ def extract_urls_from_biorxiv_html(soup: BeautifulSoup) -> list[str]:
     return urls
 
 
-def parse_email_biorxiv(message: email.message.EmailMessage) -> list[Article]:
-    subject = message.get("Subject")
+def extract_ids_from_arxiv_email(message: email.message.EmailMessage) -> list[str]:
+    """Returns list of ArXiv IDs"""
     soup = extract_html_from_email(message)
-    urls = extract_urls_from_biorxiv_html(soup)
-    articles = []
-    for url in urls:
-        try:
-            article = get_article_from_biorxiv(url)
-        except Exception:
-            logger.error("Failed to load article: {}", url)
-            continue
-        article.source = f"BioRxiv {subject}"
-        articles.append(article)
-    return articles
+    ids = [
+        match.group(1)
+        for line in soup.get_text().split("\n")
+        if (match := re.fullmatch(r"^arXiv:([a-zA-Z0-9]+\.[a-zA-Z0-9]+)", line.strip()))
+    ]
+    return ids
 
 
-def parse_email_google_scholar(message: email.message.EmailMessage) -> list[Article]:
-    raise NotImplementedError("Google Scholar is not implemented")
-
-
-def parse_email_pubmed(message: email.message.EmailMessage) -> list[Article]:
+def extract_pmids_from_pubmed_email(message: email.message.EmailMessage) -> list[str]:
+    """Returns list of PubMed IDs"""
     soup = extract_html_from_email(message)
     anchors = soup.find_all("a", class_="docsum-title")
     pmids = [re.fullmatch(r"article_id=(\d+)", a.get("ref")).group(1) for a in anchors]
-    articles = get_articles_from_ncbi_entrez(pmids)
-    for article in articles:
-        article.source = "NCBI PubMed alert"
-    return articles
+    return pmids
 
 
-def parse_email_nature(message: email.message.EmailMessage) -> list[Article]:
+def extract_dois_from_nature_alert_email(
+    message: email.message.EmailMessage,
+) -> list[str]:
+    """Returns list of Nature DOIs
+
+    Note: This is for emails from "Nature Alert"
+    """
     npg_magic_param = "_L54AD1F204_"
     npg_doi_prefix = "10.1038"
     soup = extract_html_from_email(message)
@@ -119,58 +118,110 @@ def parse_email_nature(message: email.message.EmailMessage) -> list[Article]:
         article_id = re.fullmatch(r"/articles/(.+)", target_url.path).group(1)
         doi = f"{npg_doi_prefix}/{article_id}"
         dois.append(doi)
-    return get_articles_from_crossref(dois)
+    return dois
 
 
-def parse_email_science(message: email.message.EmailMessage) -> list[str]:
-    raise NotImplementedError("Science is not implemented")
+def extract_dois_from_nature_ealerts_email(
+    message: email.message.EmailMessage,
+) -> list[str]:
+    """Returns list of Nature DOIs
+
+    Note: This is for emails from "Nature eAlerts"
+    """
+    soup = extract_html_from_email(message)
+    dois = re.findall(r"\bdoi:([^\s]+)", soup.get_text())
+    return dois
 
 
-def parse_email_cellpress(message: email.message.EmailMessage) -> list[str]:
-    raise NotImplementedError("Cell Press is not implemented")
+def extract_ids_from_semantic_scholar_email(
+    message: email.message.EmailMessage,
+) -> list[str]:
+    """Returns list of Semantic Scholar internal IDs"""
+    soup = extract_html_from_email(message)
+    urls = [elt.get("href") for elt in soup.find_all("a", class_="paper-link")]
+    ids = [urlparse(url).path.split("/")[-1] for url in urls]
+    return ids
 
 
-def parse_email_nejm(message: email.message.EmailMessage) -> list[str]:
-    raise NotImplementedError("NEJM is not implemented")
+def process_email(
+    message: email.message.EmailMessage, contact_email: str = None
+) -> list[Article]:
+    """Process an email and return a list of articles
 
+    This is a "top-level" function that dispatches to the correct handler for the
+    email sender and encodes necessary logic for each sender.
 
-def parse_email_annual_reviews(message: email.message.EmailMessage) -> list[str]:
-    raise NotImplementedError("Annual Reviews is not implemented")
+    Parameters
+    ----------
+    message : email.message.EmailMessage
+        The email message to process
+    contact_email : str
+        Your contact email for Crossref "Polite" requests
 
-
-def parse_email_oxford_academic(message: email.message.EmailMessage) -> list[str]:
-    raise NotImplementedError("Oxford Academic is not implemented")
-
-
-def parse_email_biodecoded(message: email.message.EmailMessage) -> list[str]:
-    raise NotImplementedError("BioDecoded is not implemented")
-
-
-def parse_email(message: email.message.EmailMessage) -> list[Article]:
+    Returns
+    -------
+    list[Article]
+        List of articles extracted from the email
+    """
     _, from_ = email.utils.parseaddr(message.get("From"))
+    _, to = email.utils.parseaddr(message.get("To"))
     subject = message.get("Subject")
-
-    match from_:
-        case "cshljnls-mailer@alerts.highwire.org":
-            return parse_email_biorxiv(message)
-        case "scholaralerts-noreply@google.com" | "scholarcitations-noreply@google.com":
-            return parse_email_google_scholar(message)
-        case "efback@ncbi.nlm.nih.gov":
-            return parse_email_pubmed(message)
-        case "ealert@nature.com":
-            return parse_email_nature(message)
-        case "oxfordacademicalerts@oup.com":
-            return parse_email_oxford_academic(message)
-        case "alerts@aaas.sciencepubs.org":
-            return parse_email_science(message)
-        case "cellpress@notification.elsevier.com":
-            return parse_email_cellpress(message)
-        case "nejmtoc@n.nejm.org":
-            return parse_email_nejm(message)
-        case "busybee@blogtrottr.com" if "BioDecoded" in subject:
-            return parse_email_biodecoded(message)
-        case "announce@annualreviews.org":
-            return parse_email_annual_reviews(message)
+    logger.info("Processing email from {} to {}: {}", from_, to, subject)
+    articles = []
+    if from_ == "cshljnls-mailer@alerts.highwire.org":
+        urls = extract_urls_from_biorxiv_email(message)
+        logger.info("Found {} URLs in BioRxiv email", len(urls))
+        for url in urls:
+            try:
+                articles.append(request_article_from_biorxiv_url(url))
+            except Exception:
+                logger.info("Failed to get article from BioRxiv: {}", url)
+                continue
+        logger.info(
+            "Found {} articles from {} URLs in BioRxiv email", len(articles), len(urls)
+        )
+        return articles
+    if from_ == "efback@ncbi.nlm.nih.gov":
+        pmids = extract_pmids_from_pubmed_email(message)
+        logger.info("Found {} PMIDs in PubMed email", len(pmids))
+        articles.extend(request_articles_from_ncbi_entrez(pmids))
+        logger.info(
+            "Found {} articles from {} PMIDs in PubMed email", len(articles), len(pmids)
+        )
+        return articles
+    if from_ == "Nature@e-alert.nature.com":
+        # emails that are from "Nature Alert"
+        dois = extract_dois_from_nature_alert_email(message)
+        articles.extend(request_articles_by_dois(dois, contact_email=contact_email))
+        return articles
+    if from_ == "ealert@nature.com":
+        # emails that are from "Nature eAlerts"
+        dois = extract_dois_from_nature_ealerts_email(message)
+        articles.extend(request_articles_by_dois(dois, contact_email=contact_email))
+        return articles
+    if from_ == "do-not-reply@semanticscholar.org":
+        ids = extract_ids_from_semantic_scholar_email(message)
+        articles.extend(request_articles_from_semantic_scholar(ids))
+        return articles
+    if from_ == "no-reply@arXiv.org":
+        ids = extract_ids_from_arxiv_email(message)
+        articles.extend(request_articles_from_arxiv(ids))
+        return articles
+    # not implemented below
+    # elif from_ in ["scholaralerts-noreply@google.com", "scholarcitations-noreply@google.com"]:
+    #     urls = parse_email_google_scholar(message)
+    # elif from_ == "oxfordacademicalerts@oup.com":
+    #     return parse_email_oxford_academic(message)
+    # elif from_ == "alerts@aaas.sciencepubs.org":
+    #     return parse_email_science(message)
+    # elif from_ == "cellpress@notification.elsevier.com":
+    #     return parse_email_cellpress(message)
+    # elif from_ == "nejmtoc@n.nejm.org":
+    #     return parse_email_nejm(message)
+    # elif from_ == "busybee@blogtrottr.com" and "BioDecoded" in subject:
+    #     return parse_email_biodecoded(message)
+    # elif from_ == "announce@annualreviews.org":
+    #     return parse_email_annual_reviews(message)
 
     logger.warning("No email handler for sender: {}", from_)
     raise NotImplementedError(f"Unknown sender: {from_}")
@@ -215,12 +266,17 @@ def generate_report(
         .sort("distance")
         .iter_rows(named=True)
     ):
+        article_url = (
+            f"https://doi.org/{article['doi']}"
+            if article["journal"] != "arXiv"
+            else f"https://arxiv.org/abs/{article['arxiv']}"
+        )
         report_html += f"""
         <div style='margin: 1em 0;'>
-            <strong><a href='https://doi.org/{article["doi"]}'>{article["title"]}</a></strong><br>
+            <strong><a href='{article_url}'>{article["title"]}</a></strong><br>
             {article["authors"]}<br>
             <em>{article["journal"]}</em><br>
-            <a href='https://doi.org/{article["doi"]}'>https://doi.org/{article["doi"]}</a><br>
+            <a href='{article_url}'>{article_url}</a><br>
             <span style='color: #666;'>Distance: {article["distance"]:.3f}</span>
         </div>
         """
