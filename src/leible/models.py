@@ -3,25 +3,17 @@ from dataclasses import dataclass
 
 @dataclass
 class Article:
-    title: str
-    abstract: str
-    journal: str = None
-    year: int = None
-    authors: str = None  # string containing author info
-    source: str = None  # e.g., BioRxiv email, Papers app
-    date_added: str = None  # YYYY-MM-DD
-    notes: str = None  # extra info, preferably in JSON
-    # one of these ids _should_ be set
+    # identifiers
     doi: str = None
     pmid: str = None
     arxiv: str = None
-    # internal id
-    _id: int = None
-
-
-@dataclass
-class Embedding:
-    input: str  # the input text that was embedded
-    model: str  # the name of the model
-    embedding: str  # JSON list of floats (as string)
-    article_id: int = None  # foreign key to articles _id
+    semantic_scholar: str = None  # Semantic Scholar internal ID (hex)
+    publisher_url: str = None  # URL of article on publisher's website
+    # metadata
+    title: str = None
+    abstract: str = None
+    journal: str = None
+    year: int = None
+    authors: str = None  # string containing author info
+    notes: str = None  # extra info, preferably in JSON
+    embedding: str = None  # string encoding a JSON list of floats

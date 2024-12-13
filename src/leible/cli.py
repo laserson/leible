@@ -7,11 +7,8 @@ import numpy as np
 import polars as pl
 from click import Choice, group, option
 from click import Path as ClickPath
-from dotenv import load_dotenv
 from imapclient import IMAPClient
 from loguru import logger
-from sklearn.model_selection import KFold
-from sklearn.neighbors import NearestNeighbors
 
 from leible.email import (
     construct_report_email,
@@ -19,8 +16,13 @@ from leible.email import (
     generate_report,
     process_email,
 )
-from leible.embeddings import embed_articles_specter2
-from leible.utils import load_readcube_papers_csv
+from leible.embeddings import (
+    compute_cross_validation_stats,
+    compute_knn_distances,
+    embed_articles_specter2,
+)
+from leible.metadata import load_readcube_papers_csv
+from leible.utils import load_config
 
 
 @group()
@@ -43,15 +45,10 @@ def cli():
     default="INFO",
 )
 def emails(library_csv: Path, threshold: float, log_level: str):
-    env_file = Path.home() / ".config" / "leible" / ".env"
-    if env_file.exists():
-        load_dotenv(env_file)
-        logger.info(f"Loaded environment variables from {env_file}")
-    else:
-        load_dotenv()
-        logger.info("Loaded environment variables from CWD .env")
     logger.remove()
     logger.add(sys.stderr, level=log_level)
+
+    load_config()
 
     emails = fetch_emails(
         os.environ["LEIBLE_IMAP_SERVER"],
@@ -62,41 +59,32 @@ def emails(library_csv: Path, threshold: float, log_level: str):
     )
     logger.info(f"Fetched {len(emails)} emails for processing")
 
-    # load library and embed articles
-    articles = load_readcube_papers_csv(library_csv, os.environ["LEIBLE_IMAP_USER"])
-    logger.info(f"Loaded {len(articles)} articles from {library_csv}")
-    embeddings = embed_articles_specter2(articles)
-    embeddings = np.asarray([e.embedding for e in embeddings])
-    logger.info(f"Embedded {len(embeddings)} articles")
+    # load reference library and embed articles
+    ref_articles = load_readcube_papers_csv(library_csv, os.environ["LEIBLE_IMAP_USER"])
+    logger.info(f"Loaded {len(ref_articles)} articles from {library_csv}")
+    ref_df = pl.DataFrame(ref_articles)
+    ref_df = embed_articles_specter2(ref_df)
+    ref_embeddings = np.asarray(ref_df.get_column("embedding").to_list())
+    logger.info(f"Embedded {len(ref_df)} articles")
 
-    # run 5-fold cross validation
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
-    cross_validation_stats = []
-    for fold, (train_idx, test_idx) in enumerate(kf.split(embeddings)):
-        knn = NearestNeighbors(n_neighbors=10, metric="cosine")
-        knn.fit(embeddings[train_idx])
-        distances, _ = knn.kneighbors(embeddings[test_idx])
-        cross_validation_stats.append(
-            pl.DataFrame({"fold": str(fold), "distance": distances.mean(axis=1)})
-        )
-    cross_validation_stats = pl.concat(cross_validation_stats)
-    logger.info("Computed 5-fold cross validation distances")
-
-    # generate the k-NN graph for the library
-    knn = NearestNeighbors(n_neighbors=10, metric="cosine")
-    knn.fit(embeddings)
-    logger.info("Created k-NN graph for classification")
+    # run cross validation
+    folds, distances = compute_cross_validation_stats(ref_embeddings)
+    ref_df = ref_df.with_columns(
+        pl.Series("cv_fold", folds), pl.Series("cv_distance", distances)
+    )
+    logger.info("Computed cross validation distances")
 
     # process emails
     for message in emails:
         logger.info("Starting to process email {}", message.get("Subject"))
 
         try:
-            articles = process_email(message)
+            query_articles = process_email(message)
         except NotImplementedError:
             logger.info("Email from {} not implemented", message.get("From"))
             continue
-        if len(articles) == 0:
+
+        if len(query_articles) == 0:
             logger.warning(
                 "Email {} from {} returned no articles",
                 message.get("Subject"),
@@ -104,17 +92,26 @@ def emails(library_csv: Path, threshold: float, log_level: str):
             )
             logger.debug("Email content:\n{}", str(message))
             continue
-        embeddings = embed_articles_specter2(articles)
-        embeddings = np.asarray([e.embedding for e in embeddings])
-        distances, _ = knn.kneighbors(embeddings)
-        logger.info(f"Embedded and scored {len(articles)} articles")
-        articles_df = pl.DataFrame(articles).with_columns(
-            pl.Series("distance", distances.mean(axis=1))
-        )
-        num_matches = articles_df.filter(pl.col("distance") < threshold).shape[0]
-        logger.info(f"Found {num_matches} matches out of {len(articles)} articles")
 
-        report_html = generate_report(cross_validation_stats, articles_df, threshold)
+        # remove articles with missing title or abstract
+        query_df = pl.DataFrame(query_articles).filter(
+            pl.col("title").is_not_null() & pl.col("abstract").is_not_null()
+        )
+        query_df = embed_articles_specter2(query_df)
+        query_embeddings = np.asarray(query_df.get_column("embedding").to_list())
+        distances = compute_knn_distances(query_embeddings, ref_embeddings)
+        logger.info(f"Embedded and scored {len(query_df)} articles")
+        query_df = pl.DataFrame(query_df).with_columns(pl.Series("distance", distances))
+        num_matches = query_df.filter(pl.col("distance") < threshold).shape[0]
+        logger.info(f"Found {num_matches} matches out of {len(ref_articles)} articles")
+
+        report_html = generate_report(
+            # drop embedding col bc it's problematic when converted to pandas
+            # for seaborn
+            ref_df.drop("embedding"),
+            query_df.drop("embedding"),
+            threshold,
+        )
         logger.info("Generated HTML report")
         response = construct_report_email(
             message, report_html, os.environ["LEIBLE_SMTP_USER"]

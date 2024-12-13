@@ -15,8 +15,10 @@ from loguru import logger
 
 from leible.metadata import (
     request_article_from_biorxiv_url,
-    request_articles_by_dois,
+    request_article_from_nature_url,
+    request_article_from_science_url,
     request_articles_from_arxiv,
+    request_articles_from_crossref,
     request_articles_from_ncbi_entrez,
     request_articles_from_semantic_scholar,
 )
@@ -89,10 +91,7 @@ def extract_pmids_from_pubmed_email(message: email.message.EmailMessage) -> list
 def extract_dois_from_nature_alert_email(
     message: email.message.EmailMessage,
 ) -> list[str]:
-    """Returns list of Nature DOIs
-
-    Note: This is for emails from "Nature Alert"
-    """
+    """Returns list of DOIs from a "Nature Alert" email"""
     npg_magic_param = "_L54AD1F204_"
     npg_doi_prefix = "10.1038"
     soup = extract_html_from_email(message)
@@ -124,10 +123,7 @@ def extract_dois_from_nature_alert_email(
 def extract_dois_from_nature_ealerts_email(
     message: email.message.EmailMessage,
 ) -> list[str]:
-    """Returns list of Nature DOIs
-
-    Note: This is for emails from "Nature eAlerts"
-    """
+    """Returns list of DOIs from "Nature eAlerts" email"""
     soup = extract_html_from_email(message)
     dois = re.findall(r"\bdoi:([^\s]+)", soup.get_text())
     return dois
@@ -141,6 +137,17 @@ def extract_ids_from_semantic_scholar_email(
     urls = [elt.get("href") for elt in soup.find_all("a", class_="paper-link")]
     ids = [urlparse(url).path.split("/")[-1] for url in urls]
     return ids
+
+
+def extract_urls_from_science_email(message: email.message.EmailMessage) -> list[str]:
+    logger.debug("Extracting URLs from Science email")
+    soup = extract_html_from_email(message)
+    urls = [
+        elt.get("href")
+        for elt in soup.find_all("a", string=re.compile(r"Read More", re.IGNORECASE))
+    ]
+    logger.debug("Extracted {} URLs from Science email", len(urls))
+    return urls
 
 
 def process_email(
@@ -169,51 +176,73 @@ def process_email(
     logger.info("Processing email from {} to {}: {}", from_, to, subject)
     articles = []
     if from_ == "cshljnls-mailer@alerts.highwire.org":
-        urls = extract_urls_from_biorxiv_email(message)
+        urls = list(set(extract_urls_from_biorxiv_email(message)))
         logger.info("Found {} URLs in BioRxiv email", len(urls))
         for url in urls:
             try:
                 articles.append(request_article_from_biorxiv_url(url))
             except Exception:
-                logger.info("Failed to get article from BioRxiv: {}", url)
+                logger.info("Failed to get article metadata from BioRxiv: {}", url)
                 continue
         logger.info(
             "Found {} articles from {} URLs in BioRxiv email", len(articles), len(urls)
         )
         return articles
     if from_ == "efback@ncbi.nlm.nih.gov":
-        pmids = extract_pmids_from_pubmed_email(message)
+        pmids = list(set(extract_pmids_from_pubmed_email(message)))
         logger.info("Found {} PMIDs in PubMed email", len(pmids))
-        articles.extend(request_articles_from_ncbi_entrez(pmids))
+        articles.extend(
+            request_articles_from_ncbi_entrez(pmids, contact_email=contact_email)
+        )
         logger.info(
             "Found {} articles from {} PMIDs in PubMed email", len(articles), len(pmids)
         )
         return articles
-    if from_ == "Nature@e-alert.nature.com":
-        # emails that are from "Nature Alert"
-        dois = extract_dois_from_nature_alert_email(message)
-        articles.extend(request_articles_by_dois(dois, contact_email=contact_email))
-        return articles
-    if from_ == "ealert@nature.com":
-        # emails that are from "Nature eAlerts"
-        dois = extract_dois_from_nature_ealerts_email(message)
-        articles.extend(request_articles_by_dois(dois, contact_email=contact_email))
+    if from_ == "Nature@e-alert.nature.com" or from_ == "ealert@nature.com":
+        match from_:
+            case "Nature@e-alert.nature.com":  # emails that are from "Nature Alert"
+                dois = list(set(extract_dois_from_nature_alert_email(message)))
+            case "ealert@nature.com":  # emails that are from "Nature eAlerts"
+                dois = list(set(extract_dois_from_nature_ealerts_email(message)))
+        # try semantic scholar
+        articles.extend(request_articles_from_semantic_scholar(dois))
+        missing_dois = set(dois) - set([article.doi for article in articles])
+        # try crossref
+        articles.extend(request_articles_from_crossref(missing_dois))
+        missing_dois = set(dois) - set([article.doi for article in articles])
+        # try Nature pages directly
+        for doi in missing_dois:
+            nature_id = doi.split("/")[-1]
+            url = f"https://www.nature.com/articles/{nature_id}"
+            try:
+                articles.append(request_article_from_nature_url(url))
+            except Exception:
+                logger.debug("Failed to get article metadata from Nature: {}", doi)
+                continue
         return articles
     if from_ == "do-not-reply@semanticscholar.org":
-        ids = extract_ids_from_semantic_scholar_email(message)
+        ids = list(set(extract_ids_from_semantic_scholar_email(message)))
         articles.extend(request_articles_from_semantic_scholar(ids))
         return articles
     if from_ == "no-reply@arXiv.org":
-        ids = extract_ids_from_arxiv_email(message)
+        ids = list(set(extract_ids_from_arxiv_email(message)))
         articles.extend(request_articles_from_arxiv(ids))
+        return articles
+    if from_ == "alerts@aaas.sciencepubs.org":
+        urls = extract_urls_from_science_email(message)
+        for url in urls:
+            try:
+                articles.append(request_article_from_science_url(url))
+            except Exception:
+                logger.debug("Failed to get article metadata from Science: {}", url)
+                continue
         return articles
     # not implemented below
     # elif from_ in ["scholaralerts-noreply@google.com", "scholarcitations-noreply@google.com"]:
     #     urls = parse_email_google_scholar(message)
     # elif from_ == "oxfordacademicalerts@oup.com":
     #     return parse_email_oxford_academic(message)
-    # elif from_ == "alerts@aaas.sciencepubs.org":
-    #     return parse_email_science(message)
+    
     # elif from_ == "cellpress@notification.elsevier.com":
     #     return parse_email_cellpress(message)
     # elif from_ == "nejmtoc@n.nejm.org":
@@ -228,11 +257,11 @@ def process_email(
 
 
 def generate_report(
-    distance_stats: pl.DataFrame, articles_df: pl.DataFrame, threshold: float
+    ref_df: pl.DataFrame, query_df: pl.DataFrame, threshold: float
 ) -> str:
     fig, ax = plt.subplots()
-    sns.kdeplot(distance_stats, x="distance", hue="fold", ax=ax, legend=False)
-    for distance in articles_df.get_column("distance").to_list():
+    sns.kdeplot(ref_df, x="cv_distance", hue="cv_fold", ax=ax, legend=False)
+    for distance in query_df.get_column("distance").to_list():
         ax.axvline(x=distance, color="black", linestyle="-", linewidth=0.5)
     ax.axvline(x=threshold, color="red", linestyle="--", linewidth=2)
     buffer = io.BytesIO()
@@ -241,8 +270,8 @@ def generate_report(
     plot_base64 = base64.b64encode(buffer.getvalue()).decode()
     buffer.close()
 
-    num_matches = articles_df.filter(pl.col("distance") < threshold).shape[0]
-    num_articles = articles_df.shape[0]
+    num_matches = query_df.filter(pl.col("distance") < threshold).shape[0]
+    num_articles = query_df.shape[0]
     percent_matches = num_matches / num_articles * 100
 
     # generate HTML report content
@@ -262,7 +291,7 @@ def generate_report(
         <br>
     """
     for article in (
-        articles_df.filter(pl.col("distance") < threshold)
+        query_df.filter(pl.col("distance") < threshold)
         .sort("distance")
         .iter_rows(named=True)
     ):
