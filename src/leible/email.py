@@ -151,7 +151,7 @@ def extract_urls_from_science_email(message: email.message.EmailMessage) -> list
 
 
 def process_email(
-    message: email.message.EmailMessage, contact_email: str = None
+    message: email.message.EmailMessage, contact_email: str = None, s2_api_key: str = None
 ) -> list[Article]:
     """Process an email and return a list of articles
 
@@ -164,6 +164,8 @@ def process_email(
         The email message to process
     contact_email : str
         Your contact email for Crossref "Polite" requests
+    s2_api_key : str
+        Your API key for Semantic Scholar
 
     Returns
     -------
@@ -205,7 +207,7 @@ def process_email(
             case "ealert@nature.com":  # emails that are from "Nature eAlerts"
                 dois = list(set(extract_dois_from_nature_ealerts_email(message)))
         # try semantic scholar
-        articles.extend(request_articles_from_semantic_scholar(dois))
+        articles.extend(request_articles_from_semantic_scholar(dois, api_key=s2_api_key))
         missing_dois = set(dois) - set([article.doi for article in articles])
         # try crossref
         articles.extend(request_articles_from_crossref(missing_dois))
@@ -222,7 +224,7 @@ def process_email(
         return articles
     if from_ == "do-not-reply@semanticscholar.org":
         ids = list(set(extract_ids_from_semantic_scholar_email(message)))
-        articles.extend(request_articles_from_semantic_scholar(ids))
+        articles.extend(request_articles_from_semantic_scholar(ids, api_key=s2_api_key))
         return articles
     if from_ == "no-reply@arXiv.org":
         ids = list(set(extract_ids_from_arxiv_email(message)))

@@ -397,7 +397,9 @@ def sch_paper_to_article(paper: Paper) -> Article:
     )
 
 
-def request_articles_from_semantic_scholar(dois: list[str]) -> list[Article]:
+def request_articles_from_semantic_scholar(
+    dois: list[str], api_key: str = None
+) -> list[Article]:
     """Get articles by DOIs from Semantic Scholar.
 
     Note: makes multiple API calls through SemanticScholar package with 500 IDs
@@ -423,7 +425,7 @@ def request_articles_from_semantic_scholar(dois: list[str]) -> list[Article]:
         )  # network call
         return found, missing
 
-    sch = SemanticScholar()
+    sch = SemanticScholar(api_key=api_key)
     papers = []
     missing_dois = []
     for batch in partition_all(500, dois):
@@ -440,14 +442,13 @@ def request_articles_from_semantic_scholar(dois: list[str]) -> list[Article]:
     return articles
 
 
-def load_readcube_papers_csv(csv_path: str, contact_email: str) -> list[Article]:
+def load_readcube_papers_csv(csv_path: str, contact_email: str, s2_api_key: str = None) -> list[Article]:
     df = pl.read_csv(csv_path, infer_schema=False).filter(
         pl.col("created (Read-Only)") > "2022-01-01"
     )
     dois = df.drop_nulls(subset="doi").get_column("doi").to_list()
-    # articles = request_articles_from_semantic_scholar(dois)
-    # missing_dois = list(set(dois) - set([article.doi for article in articles]))
-    # TODO: REENABLE SEMANTIC SCHOLAR
+    articles = request_articles_from_semantic_scholar(dois, api_key=s2_api_key)
+    missing_dois = list(set(dois) - set([article.doi for article in articles]))
     articles = []
     missing_dois = dois
     articles.extend(
