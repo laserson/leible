@@ -60,7 +60,11 @@ def emails(library_csv: Path, threshold: float, log_level: str):
     logger.info(f"Fetched {len(emails)} emails for processing")
 
     # load reference library and embed articles
-    ref_articles = load_readcube_papers_csv(library_csv, os.environ["LEIBLE_IMAP_USER"])
+    ref_articles = load_readcube_papers_csv(
+        library_csv,
+        contact_email=os.environ["LEIBLE_IMAP_USER"],
+        s2_api_key=os.environ.get("LEIBLE_S2_API_KEY"),
+    )
     logger.info(f"Loaded {len(ref_articles)} articles from {library_csv}")
     ref_df = pl.DataFrame(ref_articles)
     ref_df = embed_articles_specter2(ref_df)
@@ -79,7 +83,11 @@ def emails(library_csv: Path, threshold: float, log_level: str):
         logger.info("Starting to process email {}", message.get("Subject"))
 
         try:
-            query_articles = process_email(message)
+            query_articles = process_email(
+                message,
+                contact_email=os.environ["LEIBLE_IMAP_USER"],
+                s2_api_key=os.environ.get("LEIBLE_S2_API_KEY"),
+            )
         except NotImplementedError:
             logger.info("Email from {} not implemented", message.get("From"))
             continue
