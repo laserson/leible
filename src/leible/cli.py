@@ -97,6 +97,15 @@ def emails(library_csv: Path, threshold: float, log_level: str):
         query_df = pl.DataFrame(query_articles).filter(
             pl.col("title").is_not_null() & pl.col("abstract").is_not_null()
         )
+        if len(query_df) == 0:
+            logger.warning(
+                "Email {} from {} returned {} articles but all are missing title or abstract",
+                message.get("Subject"),
+                message.get("From"),
+                len(query_articles),
+            )
+            logger.debug("Email content:\n{}", str(message))
+            continue
         query_df = embed_articles_specter2(query_df)
         query_embeddings = np.asarray(query_df.get_column("embedding").to_list())
         distances = compute_knn_distances(query_embeddings, ref_embeddings)
