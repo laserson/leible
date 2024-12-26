@@ -12,6 +12,7 @@ import seaborn as sns
 from bs4 import BeautifulSoup
 from imapclient import IMAPClient
 from loguru import logger
+from tqdm import tqdm
 
 from leible.metadata import (
     request_article_from_biorxiv_url,
@@ -21,6 +22,7 @@ from leible.metadata import (
     request_articles_from_crossref,
     request_articles_from_ncbi_entrez,
     request_articles_from_semantic_scholar,
+    request_articles_from_nature_dois,
 )
 from leible.models import Article
 
@@ -69,6 +71,18 @@ def extract_urls_from_biorxiv_email(message: email.message.EmailMessage) -> list
     return urls
 
 
+def process_biorxiv_email(message: email.message.EmailMessage) -> list[Article]:
+    urls = list(set(extract_urls_from_biorxiv_email(message)))
+    articles = []
+    for url in tqdm(urls):
+        try:
+            articles.append(request_article_from_biorxiv_url(url))
+        except Exception:
+            logger.info("Failed to get article metadata from BioRxiv for URL: {}", url)
+            continue
+    return articles
+
+
 def extract_ids_from_arxiv_email(message: email.message.EmailMessage) -> list[str]:
     """Returns list of ArXiv IDs"""
     soup = extract_html_from_email(message)
@@ -80,12 +94,24 @@ def extract_ids_from_arxiv_email(message: email.message.EmailMessage) -> list[st
     return ids
 
 
+def process_arxiv_email(message: email.message.EmailMessage) -> list[Article]:
+    ids = list(set(extract_ids_from_arxiv_email(message)))
+    return request_articles_from_arxiv(ids)
+
+
 def extract_pmids_from_pubmed_email(message: email.message.EmailMessage) -> list[str]:
     """Returns list of PubMed IDs"""
     soup = extract_html_from_email(message)
     anchors = soup.find_all("a", class_="docsum-title")
     pmids = [re.fullmatch(r"article_id=(\d+)", a.get("ref")).group(1) for a in anchors]
     return pmids
+
+
+def process_pubmed_email(
+    message: email.message.EmailMessage, contact_email: str = None
+) -> list[Article]:
+    pmids = list(set(extract_pmids_from_pubmed_email(message)))
+    return request_articles_from_ncbi_entrez(pmids, contact_email=contact_email)
 
 
 def extract_dois_from_nature_alert_email(
@@ -120,6 +146,13 @@ def extract_dois_from_nature_alert_email(
     return dois
 
 
+def process_nature_alert_email(
+    message: email.message.EmailMessage, s2_api_key: str = None
+) -> list[Article]:
+    dois = list(set(extract_dois_from_nature_alert_email(message)))
+    return request_articles_from_nature_dois(dois, s2_api_key=s2_api_key)
+
+
 def extract_dois_from_nature_ealerts_email(
     message: email.message.EmailMessage,
 ) -> list[str]:
@@ -127,6 +160,13 @@ def extract_dois_from_nature_ealerts_email(
     soup = extract_html_from_email(message)
     dois = re.findall(r"\bdoi:([^\s]+)", soup.get_text())
     return dois
+
+
+def process_nature_ealerts_email(
+    message: email.message.EmailMessage, s2_api_key: str = None
+) -> list[Article]:
+    dois = list(set(extract_dois_from_nature_ealerts_email(message)))
+    return request_articles_from_nature_dois(dois, s2_api_key=s2_api_key)
 
 
 def extract_ids_from_semantic_scholar_email(
@@ -137,6 +177,13 @@ def extract_ids_from_semantic_scholar_email(
     urls = [elt.get("href") for elt in soup.find_all("a", class_="paper-link")]
     ids = [urlparse(url).path.split("/")[-1] for url in urls]
     return ids
+
+
+def process_semantic_scholar_email(
+    message: email.message.EmailMessage, s2_api_key: str = None
+) -> list[Article]:
+    ids = list(set(extract_ids_from_semantic_scholar_email(message)))
+    return request_articles_from_semantic_scholar(ids, api_key=s2_api_key)  
 
 
 def extract_urls_from_science_email(message: email.message.EmailMessage) -> list[str]:
@@ -150,8 +197,22 @@ def extract_urls_from_science_email(message: email.message.EmailMessage) -> list
     return urls
 
 
+def process_science_email(message: email.message.EmailMessage) -> list[Article]:
+    urls = list(set(extract_urls_from_science_email(message)))
+    articles = []
+    for url in tqdm(urls):
+        try:
+            articles.append(request_article_from_science_url(url))
+        except Exception:
+            logger.debug("Failed to get article metadata from Science: {}", url)
+            continue
+    return articles
+
+
 def process_email(
-    message: email.message.EmailMessage, contact_email: str = None, s2_api_key: str = None
+    message: email.message.EmailMessage,
+    contact_email: str = None,
+    s2_api_key: str = None,
 ) -> list[Article]:
     """Process an email and return a list of articles
 
@@ -176,85 +237,21 @@ def process_email(
     _, to = email.utils.parseaddr(message.get("To"))
     subject = message.get("Subject")
     logger.info("Processing email from {} to {}: {}", from_, to, subject)
-    articles = []
     if from_ == "cshljnls-mailer@alerts.highwire.org":
-        urls = list(set(extract_urls_from_biorxiv_email(message)))
-        logger.info("Found {} URLs in BioRxiv email", len(urls))
-        for url in urls:
-            try:
-                articles.append(request_article_from_biorxiv_url(url))
-            except Exception:
-                logger.info("Failed to get article metadata from BioRxiv: {}", url)
-                continue
-        logger.info(
-            "Found {} articles from {} URLs in BioRxiv email", len(articles), len(urls)
-        )
-        return articles
+        return process_biorxiv_email(message)
     if from_ == "efback@ncbi.nlm.nih.gov":
-        pmids = list(set(extract_pmids_from_pubmed_email(message)))
-        logger.info("Found {} PMIDs in PubMed email", len(pmids))
-        articles.extend(
-            request_articles_from_ncbi_entrez(pmids, contact_email=contact_email)
-        )
-        logger.info(
-            "Found {} articles from {} PMIDs in PubMed email", len(articles), len(pmids)
-        )
-        return articles
-    if from_ == "Nature@e-alert.nature.com" or from_ == "ealert@nature.com":
-        match from_:
-            case "Nature@e-alert.nature.com":  # emails that are from "Nature Alert"
-                dois = list(set(extract_dois_from_nature_alert_email(message)))
-            case "ealert@nature.com":  # emails that are from "Nature eAlerts"
-                dois = list(set(extract_dois_from_nature_ealerts_email(message)))
-        # try semantic scholar
-        articles.extend(request_articles_from_semantic_scholar(dois, api_key=s2_api_key))
-        missing_dois = set(dois) - set([article.doi for article in articles])
-        # try crossref
-        articles.extend(request_articles_from_crossref(missing_dois))
-        missing_dois = set(dois) - set([article.doi for article in articles])
-        # try Nature pages directly
-        for doi in missing_dois:
-            nature_id = doi.split("/")[-1]
-            url = f"https://www.nature.com/articles/{nature_id}"
-            try:
-                articles.append(request_article_from_nature_url(url))
-            except Exception:
-                logger.debug("Failed to get article metadata from Nature: {}", doi)
-                continue
-        return articles
+        return process_pubmed_email(message, contact_email=contact_email)
+    if from_ == "Nature@e-alert.nature.com":
+        return process_nature_alert_email(message, s2_api_key=s2_api_key)
+    if from_ == "ealert@nature.com":
+        return process_nature_ealerts_email(message, s2_api_key=s2_api_key)
     if from_ == "do-not-reply@semanticscholar.org":
-        ids = list(set(extract_ids_from_semantic_scholar_email(message)))
-        articles.extend(request_articles_from_semantic_scholar(ids, api_key=s2_api_key))
-        return articles
+        return process_semantic_scholar_email(message, s2_api_key=s2_api_key)
     if from_ == "no-reply@arXiv.org":
-        ids = list(set(extract_ids_from_arxiv_email(message)))
-        articles.extend(request_articles_from_arxiv(ids))
-        return articles
+        return process_arxiv_email(message)
     if from_ == "alerts@aaas.sciencepubs.org":
-        urls = extract_urls_from_science_email(message)
-        for url in urls:
-            try:
-                articles.append(request_article_from_science_url(url))
-            except Exception:
-                logger.debug("Failed to get article metadata from Science: {}", url)
-                continue
-        return articles
-    # not implemented below
-    # elif from_ in ["scholaralerts-noreply@google.com", "scholarcitations-noreply@google.com"]:
-    #     urls = parse_email_google_scholar(message)
-    # elif from_ == "oxfordacademicalerts@oup.com":
-    #     return parse_email_oxford_academic(message)
-    
-    # elif from_ == "cellpress@notification.elsevier.com":
-    #     return parse_email_cellpress(message)
-    # elif from_ == "nejmtoc@n.nejm.org":
-    #     return parse_email_nejm(message)
-    # elif from_ == "busybee@blogtrottr.com" and "BioDecoded" in subject:
-    #     return parse_email_biodecoded(message)
-    # elif from_ == "announce@annualreviews.org":
-    #     return parse_email_annual_reviews(message)
-
-    logger.warning("No email handler for sender: {}", from_)
+        return process_science_email(message)
+    logger.info("No email handler for sender: {}", from_)
     raise NotImplementedError(f"Unknown sender: {from_}")
 
 

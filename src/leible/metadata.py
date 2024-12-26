@@ -442,21 +442,60 @@ def request_articles_from_semantic_scholar(
     return articles
 
 
-def load_readcube_papers_csv(csv_path: str, contact_email: str, s2_api_key: str = None) -> list[Article]:
+def request_articles_from_nature_dois(
+    dois: list[str], s2_api_key: str = None
+) -> list[Article]:
+    articles = []
+    requested_articles = request_articles_from_semantic_scholar(
+        dois, api_key=s2_api_key
+    )
+    for article in requested_articles:
+        if article.title is not None and article.abstract is not None:
+            articles.append(article)
+    missing_dois = set(dois) - set([article.doi for article in articles])
+    # try crossref
+    requested_articles = request_articles_from_crossref(missing_dois)
+    for article in requested_articles:
+        if article.title is not None and article.abstract is not None:
+            articles.append(article)
+    missing_dois = set(dois) - set([article.doi for article in articles])
+    # try Nature pages directly
+    for doi in tqdm(missing_dois):
+        nature_id = doi.split("/")[-1]
+        url = f"https://www.nature.com/articles/{nature_id}"
+        try:
+            articles.append(request_article_from_nature_url(url))
+        except Exception:
+            logger.debug("Failed to get article metadata from Nature DOI: {}", doi)
+            continue
+    return articles
+
+
+def load_readcube_papers_csv(
+    csv_path: str, contact_email: str, s2_api_key: str = None
+) -> list[Article]:
     df = pl.read_csv(csv_path, infer_schema=False).filter(
         pl.col("created (Read-Only)") > "2022-01-01"
     )
+    logger.info("Attempting to load {} papers from ReadCube", len(df))
     dois = df.drop_nulls(subset="doi").get_column("doi").to_list()
-    articles = request_articles_from_semantic_scholar(dois, api_key=s2_api_key)
-    missing_dois = list(set(dois) - set([article.doi for article in articles]))
     articles = []
-    missing_dois = dois
-    articles.extend(
-        request_articles_from_crossref(missing_dois, contact_email=contact_email)
+    requested_articles = request_articles_from_semantic_scholar(
+        dois, api_key=s2_api_key
     )
+    for article in requested_articles:
+        if article.title is not None and article.abstract is not None:
+            articles.append(article)
+    missing_dois = list(set(dois) - set([article.doi for article in articles]))
+    requested_articles = request_articles_from_crossref(
+        missing_dois, contact_email=contact_email
+    )
+    for article in requested_articles:
+        if article.title is not None and article.abstract is not None:
+            articles.append(article)
     missing_dois = list(set(dois) - set([article.doi for article in articles]))
     # try Nature pages directly
-    nature_dois = filter(lambda doi: doi.startswith("10.1038/"), missing_dois)
+    nature_dois = list(filter(lambda doi: doi.startswith("10.1038/"), missing_dois))
     for doi in tqdm(nature_dois):
         nature_id = doi.split("/")[-1]
         url = f"https://www.nature.com/articles/{nature_id}"
@@ -465,4 +504,5 @@ def load_readcube_papers_csv(csv_path: str, contact_email: str, s2_api_key: str 
         except Exception:
             logger.debug("Failed to get article metadata from Nature: {}", doi)
             continue
+    logger.info("Successfully loaded {} papers from ReadCube", len(articles))
     return articles

@@ -9,6 +9,7 @@ from click import Choice, group, option
 from click import Path as ClickPath
 from imapclient import IMAPClient
 from loguru import logger
+from tqdm import tqdm
 
 from leible.email import (
     construct_report_email,
@@ -79,7 +80,7 @@ def emails(library_csv: Path, threshold: float, log_level: str):
     logger.info("Computed cross validation distances")
 
     # process emails
-    for message in emails:
+    for message in tqdm(emails):
         logger.info("Starting to process email {}", message.get("Subject"))
 
         try:
