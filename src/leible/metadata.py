@@ -27,6 +27,11 @@ def unwrap(text: str) -> str:
     return " ".join(chunk.strip() for chunk in text.split("\n"))
 
 
+def ignore_case_re(content: str) -> re.Pattern:
+    content = re.escape(content)
+    return re.compile(f"^{content}$", re.IGNORECASE)
+
+
 def extract_article_from_pubmed_xml(soup: BeautifulSoup) -> Article:
     """Extract article metadata from PubMed XML."""
     authors = [
@@ -211,21 +216,23 @@ def extract_article_from_nature_html(soup: BeautifulSoup) -> Article:
     """Extract article metadata from Nature HTML."""
     authors = [
         author_soup.get("content")
-        for author_soup in soup.find_all("meta", attrs={"name": "dc.creator"})
+        for author_soup in soup.find_all("meta", name=ignore_case_re("dc.creator"))
     ]
     last_first_pairs = [author.split(",") for author in authors]
     authors = ", ".join(
         [f"{first.strip()} {last.strip()}" for last, first in last_first_pairs]
     )
     return Article(
-        doi=soup.find("meta", attrs={"name": "citation_doi"}).get("content"),
-        publisher_url=soup.find("link", attrs={"rel": "canonical"}).get("href"),
-        title=soup.find("meta", attrs={"name": "dc.title"}).get("content"),
-        abstract=soup.find("meta", attrs={"name": "dc.description"}).get("content"),
-        journal=soup.find("meta", attrs={"name": "citation_journal_title"}).get(
+        doi=soup.find("meta", name=ignore_case_re("citation_doi")).get("content"),
+        publisher_url=soup.find("link", rel=ignore_case_re("canonical")).get("href"),
+        title=soup.find("meta", name=ignore_case_re("dc.title")).get("content"),
+        abstract=soup.find("meta", name=ignore_case_re("dc.description")).get(
             "content"
         ),
-        year=int(soup.find("meta", attrs={"name": "dc.date"}).get("content")[:4]),
+        journal=soup.find("meta", name=ignore_case_re("citation_journal_title")).get(
+            "content"
+        ),
+        year=int(soup.find("meta", name=ignore_case_re("dc.date")).get("content")[:4]),
         authors=authors,
     )
 
@@ -258,22 +265,24 @@ def extract_article_from_science_html(soup: BeautifulSoup) -> Article:
         authors = ", ".join(
             [
                 author_soup.get("content")
-                for author_soup in soup.find_all("meta", attrs={"name": "dc.Creator"})
+                for author_soup in soup.find_all("meta", name=ignore_case_re("dc.creator"))
             ]
         )
         article = Article(
-            doi=soup.find("meta", attrs={"name": "publication_doi"}).get("content"),
-            publisher_url=soup.find("link", attrs={"rel": "canonical"}).get("href"),
-            title=soup.find("meta", attrs={"name": "dc.Title"}).get("content"),
-            abstract=soup.find("meta", attrs={"name": "dc.Description"}).get("content"),
-            journal=soup.find("meta", attrs={"name": "citation_journal_title"}).get(
+            doi=soup.find("meta", name=ignore_case_re("publication_doi")).get("content"),
+            publisher_url=soup.find("link", rel=ignore_case_re("canonical")).get("href"),
+            title=soup.find("meta", name=ignore_case_re("dc.title")).get("content"),
+            abstract=soup.find("meta", name=ignore_case_re("dc.description")).get(
                 "content"
             ),
-            year=int(soup.find("meta", attrs={"name": "dc.Date"}).get("content")[:4]),
+            journal=soup.find("meta", name=ignore_case_re("citation_journal_title")).get(
+                "content"
+            ),
+            year=int(soup.find("meta", name=ignore_case_re("dc.date")).get("content")[:4]),
             authors=authors,
         )
     except Exception as e:
-        url = soup.find("link", attrs={"rel": "canonical"})
+        url = soup.find("link", rel=ignore_case_re("canonical"))
         url = url.get("href") if url else None
         logger.debug("Failed to extract article metadata from Science: {}", url)
         raise e

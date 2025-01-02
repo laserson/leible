@@ -48,8 +48,11 @@ def fetch_emails(
 
 
 def extract_html_from_email(message: email.message.EmailMessage) -> BeautifulSoup:
+    body: email.message.EmailMessage = message.get_body(("html", "plain"))
+    payload: bytes = body.get_payload(decode=True)
+    encoding: str = body.get_content_charset() or "utf-8"
     return BeautifulSoup(
-        message.get_body(("html", "plain")).get_payload(decode=True).decode("utf-8"),
+        payload.decode(encoding),
         "html.parser",
     )
 
@@ -183,7 +186,7 @@ def process_semantic_scholar_email(
     message: email.message.EmailMessage, s2_api_key: str = None
 ) -> list[Article]:
     ids = list(set(extract_ids_from_semantic_scholar_email(message)))
-    return request_articles_from_semantic_scholar(ids, api_key=s2_api_key)  
+    return request_articles_from_semantic_scholar(ids, api_key=s2_api_key)
 
 
 def extract_urls_from_science_email(message: email.message.EmailMessage) -> list[str]:
