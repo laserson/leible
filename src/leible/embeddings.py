@@ -2,7 +2,6 @@ import numpy as np
 import polars as pl
 import torch
 from adapters import AutoAdapterModel
-from joblib import Parallel, delayed
 from sklearn.model_selection import KFold
 from sklearn.neighbors import NearestNeighbors
 from torch.utils.data import DataLoader

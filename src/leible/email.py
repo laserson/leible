@@ -16,13 +16,11 @@ from tqdm import tqdm
 
 from leible.metadata import (
     request_article_from_biorxiv_url,
-    request_article_from_nature_url,
     request_article_from_science_url,
     request_articles_from_arxiv,
-    request_articles_from_crossref,
+    request_articles_from_nature_dois,
     request_articles_from_ncbi_entrez,
     request_articles_from_semantic_scholar,
-    request_articles_from_nature_dois,
 )
 from leible.models import Article
 
