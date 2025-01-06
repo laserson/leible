@@ -216,23 +216,23 @@ def extract_article_from_nature_html(soup: BeautifulSoup) -> Article:
     """Extract article metadata from Nature HTML."""
     authors = [
         author_soup.get("content")
-        for author_soup in soup.find_all("meta", name=ignore_case_re("dc.creator"))
+        for author_soup in soup.find_all("meta", attrs={"name": ignore_case_re("dc.creator")})
     ]
     last_first_pairs = [author.split(",") for author in authors]
     authors = ", ".join(
         [f"{first.strip()} {last.strip()}" for last, first in last_first_pairs]
     )
     return Article(
-        doi=soup.find("meta", name=ignore_case_re("citation_doi")).get("content"),
+        doi=soup.find("meta", attrs={"name": ignore_case_re("citation_doi")}).get("content"),
         publisher_url=soup.find("link", rel=ignore_case_re("canonical")).get("href"),
-        title=soup.find("meta", name=ignore_case_re("dc.title")).get("content"),
-        abstract=soup.find("meta", name=ignore_case_re("dc.description")).get(
+        title=soup.find("meta", attrs={"name": ignore_case_re("dc.title")}).get("content"),
+        abstract=soup.find("meta", attrs={"name": ignore_case_re("dc.description")}).get(
             "content"
         ),
-        journal=soup.find("meta", name=ignore_case_re("citation_journal_title")).get(
+        journal=soup.find("meta", attrs={"name": ignore_case_re("citation_journal_title")}).get(
             "content"
         ),
-        year=int(soup.find("meta", name=ignore_case_re("dc.date")).get("content")[:4]),
+        year=int(soup.find("meta", attrs={"name": ignore_case_re("dc.date")}).get("content")[:4]),
         authors=authors,
     )
 
@@ -265,20 +265,20 @@ def extract_article_from_science_html(soup: BeautifulSoup) -> Article:
         authors = ", ".join(
             [
                 author_soup.get("content")
-                for author_soup in soup.find_all("meta", name=ignore_case_re("dc.creator"))
+                for author_soup in soup.find_all("meta", attrs={"name": ignore_case_re("dc.creator")})
             ]
         )
         article = Article(
-            doi=soup.find("meta", name=ignore_case_re("publication_doi")).get("content"),
+            doi=soup.find("meta", attrs={"name": ignore_case_re("publication_doi")}).get("content"),
             publisher_url=soup.find("link", rel=ignore_case_re("canonical")).get("href"),
-            title=soup.find("meta", name=ignore_case_re("dc.title")).get("content"),
-            abstract=soup.find("meta", name=ignore_case_re("dc.description")).get(
+            title=soup.find("meta", attrs={"name": ignore_case_re("dc.title")}).get("content"),
+            abstract=soup.find("meta", attrs={"name": ignore_case_re("dc.description")}).get(
                 "content"
             ),
-            journal=soup.find("meta", name=ignore_case_re("citation_journal_title")).get(
+            journal=soup.find("meta", attrs={"name": ignore_case_re("citation_journal_title")}).get(
                 "content"
             ),
-            year=int(soup.find("meta", name=ignore_case_re("dc.date")).get("content")[:4]),
+            year=int(soup.find("meta", attrs={"name": ignore_case_re("dc.date")}).get("content")[:4]),
             authors=authors,
         )
     except Exception as e:
