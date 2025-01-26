@@ -9,7 +9,7 @@ from ratelimit import limits, sleep_and_retry
 from semanticscholar import SemanticScholar
 from semanticscholar.Paper import Paper
 from toolz import partition_all
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 from leible.models import Article
 from leible.utils import get_first_simple_type, get_page_content_with_playwright
@@ -24,7 +24,7 @@ def get_text(
 
 
 def unwrap(text: str) -> str:
-    return " ".join(chunk.strip() for chunk in text.split("\n"))
+    return " ".join(chunk.strip() for chunk in text.split("\n")) if text else None
 
 
 def ignore_case_re(content: str) -> re.Pattern:
@@ -191,7 +191,7 @@ def extract_article_from_biorxiv_html(soup: BeautifulSoup) -> Article:
 
 
 @sleep_and_retry
-@limits(calls=1, period=1)
+@limits(calls=1, period=2)
 def request_article_from_biorxiv_url(url: str) -> Article:
     """Get article metadata from BioRxiv.
 
@@ -425,6 +425,7 @@ def request_articles_from_semantic_scholar(
         List of Article objects containing the matched papers' metadata.
     """
     logger.debug("Requesting {} IDs from Semantic Scholar", len(dois))
+    sch = SemanticScholar(api_key=api_key, timeout=60)
 
     @sleep_and_retry
     @limits(calls=1, period=4)
@@ -434,7 +435,6 @@ def request_articles_from_semantic_scholar(
         )  # network call
         return found, missing
 
-    sch = SemanticScholar(api_key=api_key)
     papers = []
     missing_dois = []
     for batch in partition_all(500, dois):

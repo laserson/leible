@@ -9,7 +9,7 @@ from transformers import AutoTokenizer
 
 
 def embed_articles_specter2(
-    articles_df: pl.DataFrame, n_jobs: int = 4, batch_size: int = 32
+    articles_df: pl.DataFrame
 ) -> pl.DataFrame:
     """Embed articles using Specter2.
 
@@ -22,10 +22,6 @@ def embed_articles_specter2(
             - abstract : str
                 The article abstract
         but generally created from a list of `Article` objects
-    n_jobs : int, default=4
-        Number of parallel jobs to run for batch processing
-    batch_size : int, default=32
-        Batch size for processing articles through the model
 
     Returns
     -------
@@ -55,7 +51,7 @@ def embed_articles_specter2(
         ).alias("input")
     )
     dataset = embedded_df.get_column("input").to_list()
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    dataloader = DataLoader(dataset, batch_size=32, shuffle=False)
     embeddings = []
     with torch.no_grad():
         for batch in dataloader:
