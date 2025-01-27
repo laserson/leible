@@ -205,8 +205,18 @@ def request_article_from_biorxiv_url(url: str) -> Article:
     Article
         Article object containing metadata for the article.
     """
-    response = requests.get(url)
+    # BioRxiv sometimes(?) does something weird and redirects from https to
+    # http, even if you start with https. But BioRxiv returns a null page if you
+    # make a request to an http URL. So we manually handle the redirects to swap
+    # out http for https if necessary.
+    https_url = re.sub(r"^http://", "https://", url)
+    response = requests.get(https_url, allow_redirects=False)
     response.raise_for_status()
+    while 300 <= response.status_code < 400:
+        url = response.headers["Location"]
+        https_url = re.sub(r"^http://", "https://", url)
+        response = requests.get(https_url, allow_redirects=False)
+        response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
     article = extract_article_from_biorxiv_html(soup)
     return article
