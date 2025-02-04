@@ -1,6 +1,6 @@
 from itertools import filterfalse
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TypeVar
 
 import requests
 from dotenv import load_dotenv
@@ -8,7 +8,7 @@ from loguru import logger
 from playwright.sync_api import sync_playwright
 from ratelimit import limits, sleep_and_retry
 
-from leible.models import Article
+T = TypeVar("T")
 
 
 @sleep_and_retry
@@ -19,8 +19,8 @@ def doi_to_redirected_url(doi: str) -> str:
 
 
 def partition_by_predicate(
-    pred: Callable[[Article], bool], xs: list[Article]
-) -> tuple[list[Article], list[Article]]:
+    pred: Callable[[T], bool], xs: list[T]
+) -> tuple[list[T], list[T]]:
     return list(filter(pred, xs)), list(filterfalse(pred, xs))
 
 

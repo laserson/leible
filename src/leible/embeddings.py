@@ -5,11 +5,29 @@ from adapters import AutoAdapterModel
 from sklearn.model_selection import KFold
 from sklearn.neighbors import NearestNeighbors
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
+
+
+def load_specter2_model() -> tuple[PreTrainedModel, PreTrainedTokenizerBase]:
+    """Load the SPECTER2 model and tokenizer.
+
+    Returns
+    -------
+    tuple[PreTrainedModel, PreTrainedTokenizerBase]
+        The SPECTER2 model and tokenizer.
+    """
+    tokenizer = AutoTokenizer.from_pretrained("allenai/specter2_base")
+    model = AutoAdapterModel.from_pretrained("allenai/specter2_base")
+    model.load_adapter(
+        "allenai/specter2", source="hf", load_as="specter2", set_active=True
+    )
+    return model, tokenizer
 
 
 def embed_articles_specter2(
-    articles_df: pl.DataFrame
+    articles_df: pl.DataFrame,
+    model: PreTrainedModel = None,
+    tokenizer: PreTrainedTokenizerBase = None,
 ) -> pl.DataFrame:
     """Embed articles using Specter2.
 
@@ -21,7 +39,10 @@ def embed_articles_specter2(
                 The article title
             - abstract : str
                 The article abstract
-        but generally created from a list of `Article` objects
+    model : PreTrainedModel, optional
+        The SPECTER2 model to use for embedding. If not provided, a new model will be loaded.
+    tokenizer : PreTrainedTokenizerBase, optional
+        The tokenizer to use for embedding. If not provided, a new tokenizer will be loaded.
 
     Returns
     -------
@@ -33,12 +54,11 @@ def embed_articles_specter2(
     -----
     Uses the SPECTER2 model from Allen AI to generate embeddings for scientific articles.
     The embeddings are generated from the concatenated title and abstract text.
+
+    Accepts a pre-loaded model and tokenizer so you only need to load it once.
     """
-    tokenizer = AutoTokenizer.from_pretrained("allenai/specter2_base")
-    model = AutoAdapterModel.from_pretrained("allenai/specter2_base")
-    model.load_adapter(
-        "allenai/specter2", source="hf", load_as="specter2", set_active=True
-    )
+    if model is None:
+        model, tokenizer = load_specter2_model()
 
     embedded_df = articles_df.with_columns(
         pl.col("abstract").fill_null("")

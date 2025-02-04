@@ -12,7 +12,12 @@ from toolz import partition_all
 from tqdm import tqdm
 
 from leible.models import Article
-from leible.utils import get_first_simple_type, get_page_content_with_playwright
+from leible.utils import (
+    doi_to_redirected_url,
+    get_first_simple_type,
+    get_page_content_with_playwright,
+    partition_by_predicate,
+)
 
 
 def get_text(
@@ -24,7 +29,9 @@ def get_text(
 
 
 def unwrap(text: str) -> str:
-    return " ".join(chunk.strip() for chunk in text.split("\n")) if text else None
+    return (
+        " ".join(chunk.strip() for chunk in text.strip().split("\n")) if text else None
+    )
 
 
 def ignore_case_re(content: str) -> re.Pattern:
@@ -110,15 +117,16 @@ def extract_article_from_arxiv_xml(soup: BeautifulSoup) -> Article:
     authors = [get_text(author, "name") for author in soup.find_all("author")]
     authors = ", ".join(authors) if len(authors) > 0 else None
     publisher_url = get_text(soup, "id")
-    arxiv = (
-        re.match(
-            r"http://arxiv\.org/abs/([a-zA-Z0-9]+\.[a-zA-Z0-9]+)", publisher_url
-        ).group(1)
+    match = (
+        re.match(r"https?://arxiv\.org/abs/([0-9]+\.[0-9]+)(v[0-9]+)?.*", publisher_url)
         if publisher_url
         else None
     )
+    arxiv = match.group(1) if match else None
+    doi = f"10.48550/arXiv.{arxiv}"
     return Article(
         arxiv=arxiv,
+        doi=doi,
         title=unwrap(get_text(soup, "title")),
         abstract=unwrap(get_text(soup, "summary")),
         journal="arXiv",
@@ -144,7 +152,9 @@ def request_articles_from_arxiv(ids: list[str]) -> list[Article]:
     list[Article]
         List of Article objects containing metadata for the requested ArXiv IDs.
     """
-    logger.debug("Requesting {} IDs from ArXiv", len(ids))
+    if len(ids) == 0:
+        return []
+    logger.info("Requesting {} IDs from ArXiv", len(ids))
     max_results = 1000
     if len(ids) > max_results:
         raise ValueError(f"Max {max_results} IDs for one request")
@@ -156,10 +166,76 @@ def request_articles_from_arxiv(ids: list[str]) -> list[Article]:
     soup = BeautifulSoup(response.text, "xml")
     entries = soup.find_all("entry")
     articles = [extract_article_from_arxiv_xml(entry_soup) for entry_soup in entries]
-    missing_ids = list(set(ids) - set([article.arxiv for article in articles]))
-    if len(missing_ids) > 0:
-        logger.debug("Missed {} IDs from ArXiv: {}", len(missing_ids), missing_ids)
+    num_missing = len(ids) - len(articles)
+    if num_missing > 0:
+        logger.info("Missed {} IDs from ArXiv: {}", num_missing, ids)
     return articles
+
+
+def extract_article_from_openreview_html(soup: BeautifulSoup) -> Article:
+    """Extract article metadata from OpenReview HTML."""
+    authors = ", ".join(
+        [
+            author_soup.get("content")
+            for author_soup in soup.find_all("meta", attrs={"name": "citation_author"})
+        ]
+    )
+    pdf_url = soup.find("meta", attrs={"name": "citation_pdf_url"}).get("content")
+    publisher_url = re.sub(r"openreview\.net/pdf\?", "openreview.net/forum?", pdf_url)
+    return Article(
+        publisher_url=publisher_url,
+        title=soup.find("meta", attrs={"name": "citation_title"}).get("content"),
+        abstract=soup.find("meta", attrs={"name": "citation_abstract"}).get("content"),
+        authors=authors,
+        year=int(
+            soup.find("meta", attrs={"name": "citation_online_date"}).get("content")[:4]
+        ),
+        journal=soup.find("meta", attrs={"name": "citation_conference_title"}).get(
+            "content"
+        ),
+    )
+
+
+@sleep_and_retry
+@limits(calls=1, period=2)
+def request_article_from_openreview_url(url: str) -> Article:
+    """Get article metadata from OpenReview."""
+    response = requests.get(url)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    article = extract_article_from_openreview_html(soup)
+    return article
+
+
+@sleep_and_retry
+@limits(calls=1, period=2)
+def request_article_from_elsevier_pii(pii: str, api_key: str) -> Article:
+    """Get article metadata from Elsevier API."""
+    url = f"https://api.elsevier.com/content/article/pii/{pii}"
+    response = requests.get(
+        url,
+        params={"view": "META_ABS"},
+        headers={"Accept": "application/json", "X-ELS-APIKey": api_key},
+    )
+    response.raise_for_status()
+    data = response.json()["full-text-retrieval-response"]
+    return Article(
+        doi=data["coredata"]["prism:doi"],
+        pmid=data["pubmed-id"],
+        publisher_url=next(
+            (
+                link["@href"]
+                for link in data["coredata"]["link"]
+                if link["@rel"] == "scidir"
+            ),
+            None,
+        ),
+        title=data["coredata"]["dc:title"],
+        abstract=unwrap(data["coredata"]["dc:description"]),
+        journal=data["coredata"]["prism:publicationName"],
+        year=int(data["coredata"]["prism:coverDate"][:4]),
+        authors=", ".join([author["$"] for author in data["coredata"]["dc:creator"]]),
+    )
 
 
 def extract_article_from_biorxiv_html(soup: BeautifulSoup) -> Article:
@@ -226,23 +302,33 @@ def extract_article_from_nature_html(soup: BeautifulSoup) -> Article:
     """Extract article metadata from Nature HTML."""
     authors = [
         author_soup.get("content")
-        for author_soup in soup.find_all("meta", attrs={"name": ignore_case_re("dc.creator")})
+        for author_soup in soup.find_all(
+            "meta", attrs={"name": ignore_case_re("dc.creator")}
+        )
     ]
     last_first_pairs = [author.split(",") for author in authors]
     authors = ", ".join(
         [f"{first.strip()} {last.strip()}" for last, first in last_first_pairs]
     )
     return Article(
-        doi=soup.find("meta", attrs={"name": ignore_case_re("citation_doi")}).get("content"),
+        doi=soup.find("meta", attrs={"name": ignore_case_re("citation_doi")}).get(
+            "content"
+        ),
         publisher_url=soup.find("link", rel=ignore_case_re("canonical")).get("href"),
-        title=soup.find("meta", attrs={"name": ignore_case_re("dc.title")}).get("content"),
-        abstract=soup.find("meta", attrs={"name": ignore_case_re("dc.description")}).get(
+        title=soup.find("meta", attrs={"name": ignore_case_re("dc.title")}).get(
             "content"
         ),
-        journal=soup.find("meta", attrs={"name": ignore_case_re("citation_journal_title")}).get(
-            "content"
+        abstract=soup.find(
+            "meta", attrs={"name": ignore_case_re("dc.description")}
+        ).get("content"),
+        journal=soup.find(
+            "meta", attrs={"name": ignore_case_re("citation_journal_title")}
+        ).get("content"),
+        year=int(
+            soup.find("meta", attrs={"name": ignore_case_re("dc.date")}).get("content")[
+                :4
+            ]
         ),
-        year=int(soup.find("meta", attrs={"name": ignore_case_re("dc.date")}).get("content")[:4]),
         authors=authors,
     )
 
@@ -275,20 +361,32 @@ def extract_article_from_science_html(soup: BeautifulSoup) -> Article:
         authors = ", ".join(
             [
                 author_soup.get("content")
-                for author_soup in soup.find_all("meta", attrs={"name": ignore_case_re("dc.creator")})
+                for author_soup in soup.find_all(
+                    "meta", attrs={"name": ignore_case_re("dc.creator")}
+                )
             ]
         )
         article = Article(
-            doi=soup.find("meta", attrs={"name": ignore_case_re("publication_doi")}).get("content"),
-            publisher_url=soup.find("link", rel=ignore_case_re("canonical")).get("href"),
-            title=soup.find("meta", attrs={"name": ignore_case_re("dc.title")}).get("content"),
-            abstract=soup.find("meta", attrs={"name": ignore_case_re("dc.description")}).get(
+            doi=soup.find(
+                "meta", attrs={"name": ignore_case_re("publication_doi")}
+            ).get("content"),
+            publisher_url=soup.find("link", rel=ignore_case_re("canonical")).get(
+                "href"
+            ),
+            title=soup.find("meta", attrs={"name": ignore_case_re("dc.title")}).get(
                 "content"
             ),
-            journal=soup.find("meta", attrs={"name": ignore_case_re("citation_journal_title")}).get(
-                "content"
+            abstract=soup.find(
+                "meta", attrs={"name": ignore_case_re("dc.description")}
+            ).get("content"),
+            journal=soup.find(
+                "meta", attrs={"name": ignore_case_re("citation_journal_title")}
+            ).get("content"),
+            year=int(
+                soup.find("meta", attrs={"name": ignore_case_re("dc.date")}).get(
+                    "content"
+                )[:4]
             ),
-            year=int(soup.find("meta", attrs={"name": ignore_case_re("dc.date")}).get("content")[:4]),
             authors=authors,
         )
     except Exception as e:
@@ -434,7 +532,7 @@ def request_articles_from_semantic_scholar(
     list[Article]
         List of Article objects containing the matched papers' metadata.
     """
-    logger.debug("Requesting {} IDs from Semantic Scholar", len(dois))
+    logger.info("Requesting {} DOIs from Semantic Scholar", len(dois))
     sch = SemanticScholar(api_key=api_key, timeout=60)
 
     @sleep_and_retry
@@ -491,37 +589,191 @@ def request_articles_from_nature_dois(
 
 
 def load_readcube_papers_csv(
-    csv_path: str, contact_email: str, s2_api_key: str = None
+    csv_path: str, contact_email: str, s2_api_key: str = None, elsevier_api_key=None
 ) -> list[Article]:
-    df = pl.read_csv(csv_path, infer_schema=False).filter(
-        pl.col("created (Read-Only)") > "2022-01-01"
-    )
-    logger.info("Attempting to load {} papers from ReadCube", len(df))
-    dois = df.drop_nulls(subset="doi").get_column("doi").to_list()
+    """Load ReadCube-exported CSV and return list of articles.
+
+    This function is disgusting because it deals with a lot of gross issues in
+    the ReadCube dataset.
+
+    Parameters
+    ----------
+    csv_path : str
+        Path to the ReadCube-exported CSV file.
+    contact_email : str
+        Email to use for the Polite pool for Crossref API requests.
+    s2_api_key : str, optional
+        API key for Semantic Scholar.
+
+    Returns
+    -------
+    list[Article]
+        List of Article objects containing the matched papers' metadata.
+    """
+    logger.info("Loading ReadCube-exported CSV {}", csv_path)
+    df = pl.read_csv(csv_path, infer_schema=False)
+    logger.info("Total {} rows in ReadCube CSV", len(df))
+
     articles = []
-    requested_articles = request_articles_from_semantic_scholar(
-        dois, api_key=s2_api_key
-    )
+
+    # DOI-based loading
+    dois = df.drop_nulls(subset="doi").get_column("doi").to_list()
+    logger.info("Found {} DOIs in ReadCube CSV; attempting to load...", len(dois))
+
+    # try Semantic Scholar for DOIs
+    counter = 0
+    try:
+        requested_articles = request_articles_from_semantic_scholar(
+            dois, api_key=s2_api_key
+        )
+    except Exception as e:
+        logger.warning("Semantic Scholar request failed: {}", e)
+        requested_articles = []
     for article in requested_articles:
         if article.title is not None and article.abstract is not None:
             articles.append(article)
+            counter += 1
+    logger.info(f"Successfully loaded {counter} articles from Semantic Scholar by DOI")
     missing_dois = list(set(dois) - set([article.doi for article in articles]))
-    requested_articles = request_articles_from_crossref(
-        missing_dois, contact_email=contact_email
-    )
+
+    # try Crossref for DOIs
+    counter = 0
+    try:
+        requested_articles = request_articles_from_crossref(
+            missing_dois, contact_email=contact_email
+        )
+    except Exception as e:
+        logger.warning("Crossref request failed: {}", e)
+        requested_articles = []
     for article in requested_articles:
         if article.title is not None and article.abstract is not None:
             articles.append(article)
+            counter += 1
+    logger.info(f"Successfully loaded {counter} articles from Crossref by DOI")
     missing_dois = list(set(dois) - set([article.doi for article in articles]))
-    # try Nature pages directly
+
+    # try Nature DOIs directly
     nature_dois = list(filter(lambda doi: doi.startswith("10.1038/"), missing_dois))
-    for doi in tqdm(nature_dois):
+    counter = 0
+    for doi in tqdm(nature_dois, desc="Getting Nature articles directly"):
         nature_id = doi.split("/")[-1]
         url = f"https://www.nature.com/articles/{nature_id}"
         try:
             articles.append(request_article_from_nature_url(url))
+            counter += 1
         except Exception:
             logger.debug("Failed to get article metadata from Nature: {}", doi)
             continue
-    logger.info("Successfully loaded {} papers from ReadCube", len(articles))
+    logger.info(f"Successfully loaded {counter} articles from Nature by DOI")
+    missing_dois = list(set(dois) - set([article.doi for article in articles]))
+
+    # try arXiv DOIs directly
+    arxiv_dois = list(
+        filter(lambda doi: doi.startswith("10.48550/arxiv"), missing_dois)
+    )
+    arxiv_pattern = re.compile(r"10.48550/arxiv\.([0-9]+\.[0-9]+)(v[0-9]+)?")
+    arxiv_ids = [
+        match.group(1) for doi in arxiv_dois if (match := arxiv_pattern.match(doi))
+    ]
+    try:
+        arxiv_articles = request_articles_from_arxiv(arxiv_ids)
+        counter += len(arxiv_articles)
+    except Exception as e:
+        logger.warning("arXiv request failed: {}\n{}", e, arxiv_dois)
+        arxiv_articles = []
+    articles.extend(arxiv_articles)
+    logger.info(
+        f"Successfully loaded {len(arxiv_articles)} of {len(arxiv_dois)} articles from arXiv by DOI"
+    )
+    missing_dois = list(set(dois) - set([article.doi for article in articles]))
+
+    # try Elsevier DOIs directly (through ScienceDirect)
+    elsevier_dois = list(filter(lambda doi: doi.startswith("10.1016/"), missing_dois))
+    counter = 0
+    for doi in tqdm(elsevier_dois, desc="Getting Elsevier articles directly"):
+        try:
+            elsevier_url_1 = doi_to_redirected_url(doi)
+            elsevier_id = elsevier_url_1.split("/")[-1]
+            articles.append(
+                request_article_from_elsevier_pii(elsevier_id, elsevier_api_key)
+            )
+            counter += 1
+        except Exception as e:
+            logger.debug("Failed to get article metadata from Elsevier: {}\n{}", doi, e)
+            continue
+    logger.info(
+        f"Successfully loaded {counter} of {len(elsevier_dois)} articles from Elsevier by DOI"
+    )
+    missing_dois = list(set(dois) - set([article.doi for article in articles]))
+    logger.info(
+        "Missed {} DOIs from ReadCube CSV:\n{}", len(missing_dois), sorted(missing_dois)
+    )
+
+    # Non-DOI loading
+    counter = len(df.filter(pl.col("doi").is_null()))
+    logger.info(f"Fetching {counter} articles without DOIs...")
+
+    # try arXiv IDs
+    arxiv_ids = (
+        df.filter(pl.col("doi").is_null())
+        .drop_nulls(subset="arxiv")
+        .get_column("arxiv")
+        .to_list()
+    )
+    counter = 0
+    try:
+        arxiv_articles = request_articles_from_arxiv(arxiv_ids)
+        counter += len(arxiv_articles)
+    except Exception as e:
+        logger.warning("arXiv request failed: {}", e)
+        arxiv_articles = []
+    articles.extend(arxiv_articles)
+    logger.info(
+        f"Successfully loaded {counter} of {len(arxiv_ids)} articles with arXiv IDs"
+    )
+
+    # try URLs in ReadCube CSV
+    urls = (
+        df.filter(pl.col("doi").is_null())
+        .drop_nulls(subset="url")
+        .get_column("url")
+        .to_list()
+    )
+
+    # try arXiv URLs
+    arxiv_urls, other_urls = partition_by_predicate(
+        lambda url: url.startswith("https://arxiv.org/abs/"), urls
+    )
+    arxiv_pattern = re.compile(r"https?://arxiv\.org/abs/([0-9]+\.[0-9]+)(v[0-9]+)?.*")
+    arxiv_ids = [
+        match.group(1) for url in arxiv_urls if (match := arxiv_pattern.match(url))
+    ]
+    try:
+        arxiv_articles = request_articles_from_arxiv(arxiv_ids)
+    except Exception as e:
+        logger.warning("arXiv request failed: {}", e)
+        arxiv_articles = []
+    articles.extend(arxiv_articles)
+    logger.info(
+        f"Successfully loaded {len(arxiv_articles)} of {len(arxiv_urls)} articles with arXiv URLs"
+    )
+
+    # try OpenReview URLs
+    openreview_urls, other_urls = partition_by_predicate(
+        lambda url: url.startswith("https://openreview.net/forum?id="), other_urls
+    )
+    counter = 0
+    for url in tqdm(openreview_urls, desc="Getting OpenReview articles"):
+        try:
+            articles.append(request_article_from_openreview_url(url))
+            counter += 1
+        except Exception:
+            logger.debug("Failed to get article metadata from OpenReview: {}", url)
+            continue
+    logger.info(
+        f"Successfully loaded {counter} of {len(openreview_urls)} articles from OpenReview"
+    )
+    logger.info("Leftover URLs: {}", other_urls)
+    logger.info("Total articles loaded: {} of {}", len(articles), len(df))
+
     return articles
