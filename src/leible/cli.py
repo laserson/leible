@@ -23,7 +23,7 @@ from leible.embeddings import (
     embed_articles_specter2,
     load_specter2_model,
 )
-from leible.metadata import load_readcube_papers_csv
+from leible.metadata import simple_load_readcube_papers_csv
 from leible.utils import load_config
 
 
@@ -50,12 +50,7 @@ def readcube(readcube_csv: Path, output_parquet: Path):
 
     load_config()
 
-    readcube_articles = load_readcube_papers_csv(
-        readcube_csv,
-        contact_email=os.environ.get("LEIBLE_IMAP_USER"),
-        s2_api_key=os.environ.get("LEIBLE_S2_API_KEY"),
-        elsevier_api_key=os.environ.get("LEIBLE_ELSEVIER_API_KEY"),
-    )
+    readcube_articles = simple_load_readcube_papers_csv(readcube_csv)
     readcube_df = pl.DataFrame(readcube_articles)
     readcube_df = embed_articles_specter2(readcube_df)
     readcube_embeddings = np.asarray(readcube_df.get_column("embedding").to_list())

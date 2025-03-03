@@ -588,6 +588,14 @@ def request_articles_from_nature_dois(
     return articles
 
 
+def simple_load_readcube_papers_csv(csv_path: str) -> list[Article]:
+    df = pl.read_csv(csv_path, infer_schema=False)
+    return [
+        Article(title=row["title"], abstract=row["abstract"])
+        for row in df.iter_rows(named=True)
+    ]
+
+
 def load_readcube_papers_csv(
     csv_path: str, contact_email: str, s2_api_key: str = None, elsevier_api_key=None
 ) -> list[Article]:

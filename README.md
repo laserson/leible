@@ -3,8 +3,8 @@
 ```bash
 READCUBE_EXPORT_CSV=$HOME/proj/leible/data/readcube_papers_export.csv
 cat $READCUBE_EXPORT_CSV | duckdb -csv -c "SELECT * FROM read_csv('/dev/stdin') WHERE \"created (Read-Only)\" >= '2022-01-01'" > readcube_filtered.csv
-leible readcube --readcube-csv readcube_filtered.csv --output-csv readcube_embedded.csv
-leible emails --positives-csv readcube_embedded.csv --threshold 0.08
+leible readcube --readcube-csv readcube_filtered.csv --output-parquet readcube_embedded.parquet
+leible emails --positives-parquet readcube_embedded.parquet --threshold 0.08
 ```
     df = pl.read_csv(csv_path, infer_schema=False).filter(
         pl.col("created (Read-Only)") > "2022-01-01"
